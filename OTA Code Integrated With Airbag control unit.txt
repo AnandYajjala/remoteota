@@ -1,0 +1,220 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <Update.h>
+#define PIEZO_SENSOR_PIN 34
+#define IR_SENSOR1_PIN 27
+#define IR_SENSOR2_PIN 26
+#define LED1_PIN 12
+#define LED2_PIN 25
+#define LED3_PIN 33
+#define PIEZO_THRESHOLD 1500
+// network credentials
+const char* ssid = "john";
+const char* password = "987654321";
+bool isNewVersionAvailable = false;
+// URL of the firmware update file on the server
+const char* firmwareUrl = "https://github.com/AnandYajjala/remoteota/blob/main/ReadingserverVersion.ino.bin?raw=true";
+// Current version of your software
+int currentVersion = 8;
+// URL of the version file on the server
+const char* versionUrl = "https://anandyajjala.github.io/remoteota/softwareversion.txt";
+
+void setup() {
+  // Start the serial communication
+  Serial.begin(115200);
+  // Set up the sensor pins as input
+  pinMode(PIEZO_SENSOR_PIN, INPUT);
+  pinMode(IR_SENSOR1_PIN, INPUT);
+  pinMode(IR_SENSOR2_PIN, INPUT);
+  // Set up the LED pin as output
+  pinMode(LED1_PIN, OUTPUT);
+  pinMode(LED2_PIN, OUTPUT);
+  pinMode(LED3_PIN, OUTPUT);
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi...");
+  // Wait until the connection is established
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+    Serial.print("Current Version: ");
+    Serial.println(currentVersion);
+  // Fetch and compare the version number
+  fetchAndCompareVersion();
+}
+void loop() {
+ 
+ AirbagControl();
+
+}
+void fetchAndCompareVersion() {
+  if (WiFi.status() == WL_CONNECTED) { // Check Wi-Fi connection status
+    HTTPClient http;
+    http.begin(versionUrl); // Specify the URL
+    int httpCode = http.GET(); // Make the request
+
+    if (httpCode > 0) { // Check for the returning code
+      if (httpCode == HTTP_CODE_OK) { // Check if the response is OK
+        String payload = http.getString(); // Get the request response payload
+
+        // Print the entire payload for debugging
+        Serial.print("Payload received: ");
+        Serial.println(payload);
+        
+        // Convert payload to integer
+        int serverVersion = payload.toInt();
+        
+        Serial.print("Current Version: ");
+        Serial.println(currentVersion);
+        Serial.print("Latest Version from Server: ");
+        Serial.println(serverVersion);
+
+        // Compare versions
+        if (serverVersion > currentVersion) {
+          Serial.println("A newer version is available!");
+          isNewVersionAvailable = true;
+          //glowLED(ledPinNewVersion);
+          performOTAUpdate(serverVersion);
+           // Set the flag to indicate a newer version
+        } else {
+          Serial.println("You have the latest version");
+          Serial.println(serverVersion);
+          isNewVersionAvailable = false;
+        }
+      }
+    } else {
+      Serial.print("Error on HTTP request. HTTP Code: ");
+      Serial.println(httpCode);
+    }
+    http.end(); // Free the resources
+  } else {
+    Serial.println("WiFi not connected");
+  }
+}
+void AirbagControl(){
+
+ // Read the value from the piezoelectric sensor
+  int piezoValue = analogRead(PIEZO_SENSOR_PIN);
+  if ( piezoValue > PIEZO_THRESHOLD) {
+    //digitalWrite(LED_PIN, HIGH);
+    Serial.println("Collision detected ");
+  } else {
+    Serial.println("No Collision");
+  }
+  // Read the value from the IR sensor
+  int irValue2 = digitalRead(IR_SENSOR2_PIN);
+  //Serial.println("IR Sensor Value: ");
+  //Serial.println(irValue2);
+  int irValue = digitalRead(IR_SENSOR1_PIN);
+  if ( irValue == LOW && irValue2== LOW ) {
+    //digitalWrite(LED_PIN, HIGH);
+    Serial.println("Two Passengers detected");
+  } else if(irValue == LOW && irValue2== HIGH) {
+    Serial.println("First Passenger is detected");
+  }
+  else if(irValue == HIGH && irValue2== LOW){
+    Serial.println("Second Passenger is detected");
+  } else{
+    Serial.println("No Passenger is detected");
+  }
+  
+  // Check the conditions and control the LED
+  if (piezoValue > PIEZO_THRESHOLD && irValue == LOW && irValue2 == LOW) {
+    digitalWrite(LED1_PIN, HIGH);
+    Serial.println("Two Air Bags deployed");
+  } else if (piezoValue > PIEZO_THRESHOLD && irValue == LOW && irValue2 == HIGH){
+    Serial.println("Air Bag one deployed");
+    digitalWrite(LED2_PIN, HIGH);
+    //digitalWrite(LED_PIN, LOW);
+  } else if (piezoValue > PIEZO_THRESHOLD && irValue == HIGH && irValue2 == LOW){
+    Serial.println("Air Bag TWO deployed");
+    digitalWrite(LED3_PIN, HIGH);
+  } else{
+    Serial.println("No Air Bags deployed");
+    digitalWrite(LED1_PIN, LOW);
+    digitalWrite(LED2_PIN, LOW);
+    digitalWrite(LED3_PIN, LOW);
+  }
+
+  // Add a small delay to avoid rapid serial printing
+  delay(500);
+  
+}
+void performOTAUpdate(int serverVersion) {
+  Serial.println("Starting OTA update...");
+  
+  String currentUrl = firmwareUrl;
+  int maxRedirects = 5;
+  int redirectCount = 0;
+
+  while (redirectCount < maxRedirects) {
+    WiFiClientSecure client;
+    client.setInsecure(); // Disable SSL certificate verification
+
+    HTTPClient httpClient;
+    httpClient.begin(client, currentUrl);
+    int httpCode = httpClient.GET();
+
+    if (httpCode == HTTP_CODE_OK) {
+      int contentLength = httpClient.getSize();
+      bool canBegin = Update.begin(contentLength);
+
+      if (canBegin) {
+        Serial.printf("Firmware Size: %d bytes\n", contentLength);
+        WiFiClient *clientStream = httpClient.getStreamPtr();
+
+        size_t written = Update.writeStream(*clientStream);
+
+        if (written == contentLength) {
+          Serial.println("Written : " + String(written) + " successfully");
+        } else {
+          Serial.println("Written only : " + String(written) + "/" + String(contentLength) + ". Retry?");
+        }
+
+        if (Update.end()) {
+          if (Update.isFinished()) {
+            currentVersion=serverVersion;
+  //          preferences.putInt("current_version", serverVersion); // Update current version in preferences
+            Serial.println("Update successfully completed. Rebooting.");
+
+            ESP.restart();
+          } else {
+            Serial.println("Update not finished? Something went wrong!");
+          }
+        } else {
+          Serial.println("Error Occurred. Error #: " + String(Update.getError()));
+        }
+      } else {
+        Serial.println("Not enough space to begin OTA");
+      }
+      break; // Exit the loop as we have started the update process
+    } else if (httpCode == HTTP_CODE_FOUND || httpCode == HTTP_CODE_MOVED_PERMANENTLY || httpCode == HTTP_CODE_TEMPORARY_REDIRECT) {
+      String newUrl = httpClient.getLocation();
+      if (newUrl.length() == 0) {
+        Serial.println("Error: Redirection URL is empty");
+        return;
+      } else {
+        Serial.print("Redirecting to: ");
+        Serial.println(newUrl);
+        currentUrl = newUrl;
+        redirectCount++;
+      }
+    } else {
+      Serial.printf("HTTP request failed. HTTP Code: %d\n", httpCode);
+      return;
+    }
+
+    httpClient.end(); // Free the resources
+  }
+
+  if (redirectCount == maxRedirects) {
+    Serial.println("Error: Too many redirects.");
+  }
+}
